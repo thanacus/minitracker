@@ -8,6 +8,8 @@ import json
 from fastapi import FastAPI, HTTPException
 import uvicorn
 from fastapi.responses import Response, JSONResponse
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
 
 def unit_vector(vector):
     """ Returns the unit vector of the vector.  """
@@ -28,7 +30,7 @@ def angle_between(v1, v2):
 
 def is_rectish(contour):
     contour_len = len(contour)
-    max_angle_delta_deg = 15
+    max_angle_delta_deg = 20
     
     # Needs to be 4-sided
     if contour_len != 4:
@@ -50,17 +52,17 @@ def is_rectish(contour):
     )
     print(f"Angles: {angles}")
 
-    if abs(angles[0] - 115) > max_angle_delta_deg:
-        return False
+    # if abs(angles[0] - 115) > max_angle_delta_deg:
+    #     return False
     
-    if abs(angles[3] - 115) > max_angle_delta_deg:
-        return False
+    # if abs(angles[3] - 115) > max_angle_delta_deg:
+    #     return False
     
-    if abs(angles[1] - 65) > max_angle_delta_deg:
-        return False
+    # if abs(angles[1] - 65) > max_angle_delta_deg:
+    #     return False
     
-    if abs(angles[2] - 65) > max_angle_delta_deg:
-        return False
+    # if abs(angles[2] - 65) > max_angle_delta_deg:
+    #     return False
         
     return True
 
@@ -147,18 +149,38 @@ min_area_ratio = 0.2
 max_area_ratio = 0.8
 p_dim = 500
 
-app = FastAPI()
+field = None
+
+app = FastAPI(middleware=[
+    Middleware(CORSMiddleware, allow_origins=["*"])
+])
+
+@app.get("/image-only", responses={200:{"content":{"image/png":{}}}},response_class=Response)
+def get_image_only():
+    has_frame, frame = capture.read()
+
+    if not has_frame:
+        return { "error": "No video detected" }
+    
+    bytes = cv2.imencode('.png', frame)[1].tobytes()
+    return Response(content=bytes, media_type="image/png")
 
 @app.get("/image", responses={200:{"content":{"image/png":{}}}},response_class=Response)
 def get_camera_annotated():
+    global field
     has_frame, frame = capture.read()
 
     if not has_frame:
         return { "error": "No video detected" }
 
-    field = detect_field(frame, min_area_ratio, max_area_ratio)
-    if field.any():
+    field_poss = detect_field(frame, min_area_ratio, max_area_ratio)
+    if field_poss.any():
+        print(f"Got new field: {field_poss}")
+        field = field_poss
+
+    if field is not None:
         cv2.drawContours(frame, [field], -1, (0,255,255), 3)
+        cv2.circle(frame, field[0], 6, (0,0,0), 3)
         results = model.track(frame, persist=True)
         frame = results[0].plot()
         bytes = cv2.imencode('.png', frame)[1].tobytes()
@@ -168,16 +190,22 @@ def get_camera_annotated():
     
 @app.get("/perspective", responses={200:{"content":{"image/png":{}}}},response_class=Response)
 def get_perspected_annotated():
+    global field
     has_frame, frame = capture.read()
 
     if not has_frame:
         return { "error": "No video detected" }
 
-    field = detect_field(frame, min_area_ratio, max_area_ratio)
-    if field.any():
+    field_poss = detect_field(frame, min_area_ratio, max_area_ratio)
+    if field_poss.any():
+        print(f"Got new field: {field_poss}")
+        field = field_poss
+
+    if field is not None:
         results = model.track(frame, persist=True)
         frame = results[0].plot()
-        dst_pts = np.array([[0,0],[0,500],[500,500],[500,0]])
+        cv2.circle(frame, field[0], 6, (0,0,0), 3)
+        dst_pts = np.array([[0,0],[500,0],[500,500],[0,500]])
         M, _ = cv2.findHomography(field, dst_pts)
         frame_mod = cv2.warpPerspective(frame, M, (500,500))
         bytes = cv2.imencode('.png', frame_mod)[1].tobytes()
@@ -187,6 +215,7 @@ def get_perspected_annotated():
 
 @app.get("/coords")
 def get_positions():
+    global field
     has_frame, frame = capture.read()
 
     if not has_frame:
@@ -194,10 +223,14 @@ def get_positions():
     
     positions = []
 
-    field = detect_field(frame, min_area_ratio, max_area_ratio)
-    if field.any():
+    field_poss = detect_field(frame, min_area_ratio, max_area_ratio)
+    if field_poss.any():
+        print(f"Got new field: {field_poss}")
+        field = field_poss
+
+    if field is not None:
         results = model.track(frame, persist=True)
-        dst_pts = np.array([[0,0],[0,p_dim],[p_dim,p_dim],[p_dim,0]])
+        dst_pts = np.array([[0,0],[p_dim,0],[p_dim,p_dim],[0,p_dim]])
         M, _ = cv2.findHomography(field, dst_pts)
 
         boxes = results[0].boxes.xyxy.cpu().numpy()
